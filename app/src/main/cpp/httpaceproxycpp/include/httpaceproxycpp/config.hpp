@@ -15,6 +15,10 @@ struct Config {
     int http_port = 8888;
     int max_connections = 10;
     int max_concurrent_channels = 5;
+    // Concurrency bound for the HTTP server itself (0 = unlimited). Kept separate from
+    // max_connections, which caps concurrent *streaming* clients, so short control
+    // requests still fit while every stream slot is busy.
+    int max_http_connections = 32;
     int ace_connect_timeout = 5;
     int ace_result_timeout = 5;
     int video_timeout = 30;

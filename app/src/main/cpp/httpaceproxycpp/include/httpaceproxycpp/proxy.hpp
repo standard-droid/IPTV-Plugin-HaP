@@ -33,7 +33,8 @@ public:
     Json status_json();
     Json plugins_json();
     Json check_channel_light(const std::string& plugin, const std::string& channel, const std::string& content_id);
-    Json check_channel_peers(const std::string& content_id, int max_wait);
+    Json check_channel_peers(const std::string& content_id, int max_wait,
+                             const ClientConnection* connection = nullptr);
 
 private:
     bool is_fake_request(const HttpRequest& request) const;

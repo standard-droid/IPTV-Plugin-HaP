@@ -4,21 +4,17 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 
 namespace httpace {
 
 ChunkQueue::ChunkQueue(std::size_t max_chunks) : max_chunks_(std::max<std::size_t>(2, max_chunks)) {}
 
-PushResult ChunkQueue::push(std::vector<char> chunk, std::chrono::milliseconds wait) {
-    std::unique_lock<std::mutex> lock(mutex_);
+PushResult ChunkQueue::push(ChunkPtr chunk) {
+    if (!chunk) return PushResult::Ok;
+    std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) return PushResult::Closed;
-    if (chunks_.size() >= max_chunks_ && wait.count() > 0) {
-        cv_space_.wait_for(lock, wait, [&] {
-            return closed_ || chunks_.size() < max_chunks_;
-        });
-        if (closed_) return PushResult::Closed;
-    }
     PushResult result = PushResult::Ok;
     if (chunks_.size() >= max_chunks_) {
         chunks_.pop_front();
@@ -29,13 +25,12 @@ PushResult ChunkQueue::push(std::vector<char> chunk, std::chrono::milliseconds w
     return result;
 }
 
-bool ChunkQueue::pop(std::vector<char>& chunk) {
+bool ChunkQueue::pop(ChunkPtr& chunk) {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_data_.wait(lock, [&] { return closed_ || !chunks_.empty(); });
     if (chunks_.empty()) return false;
     chunk = std::move(chunks_.front());
     chunks_.pop_front();
-    cv_space_.notify_one();
     return true;
 }
 
@@ -43,7 +38,6 @@ void ChunkQueue::close() {
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
     cv_data_.notify_all();
-    cv_space_.notify_all();
 }
 
 std::size_t ChunkQueue::size() const {
@@ -188,12 +182,14 @@ void Broadcast::stream_hls_url(const std::string& url) {
 }
 
 void Broadcast::broadcast_chunk(const char* data, std::size_t size) {
-    std::vector<char> chunk(data, data + size);
+    if (size == 0) return;
+    // One buffer for every client: the fan-out shares it instead of copying per client.
+    auto buffer = std::make_shared<std::vector<char>>(data, data + size);
+    ChunkPtr chunk = std::move(buffer);
     auto write_timeout = std::max(1, config_.client_write_timeout);
-    auto wait = std::chrono::milliseconds(write_timeout * 1000 / 4);
     auto now = unix_time();
     for (auto& client : clients()) {
-        auto result = client->queue->push(chunk, wait);
+        auto result = client->queue->push(chunk);
         if (result == PushResult::Closed) continue;
         if (result == PushResult::DroppedOldest) {
             client->dropped_chunks.fetch_add(1, std::memory_order_relaxed);
@@ -218,11 +214,67 @@ BroadcastManager::~BroadcastManager() { stop_all(); }
 
 std::shared_ptr<Broadcast> BroadcastManager::get_or_create(const std::string& infohash,
                                                            const std::map<std::string, std::string>& params) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = broadcasts_.find(infohash);
-    if (it != broadcasts_.end()) return it->second;
-    auto broadcast = std::make_shared<Broadcast>(infohash, config_, http_client_, params);
-    broadcasts_[infohash] = broadcast;
+    // Claim the creation slot under the manager mutex, then build the Broadcast (which
+    // blocks in AceClient::authenticate()) outside it, so a channel change no longer
+    // serializes every other request. Concurrent callers for the same infohash wait on
+    // the slot, which keeps the "one Broadcast per infohash" invariant.
+    std::shared_ptr<PendingCreation> pending;
+    bool creator = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto existing = broadcasts_.find(infohash);
+        if (existing != broadcasts_.end()) return existing->second;
+        auto slot = creating_.find(infohash);
+        if (slot == creating_.end()) {
+            slot = creating_.emplace(infohash, std::make_shared<PendingCreation>()).first;
+            creator = true;
+        }
+        pending = slot->second;
+    }
+
+    if (!creator) {
+        std::unique_lock<std::mutex> lock(pending->mutex);
+        pending->cv.wait(lock, [&] { return pending->done; });
+        if (pending->error) std::rethrow_exception(pending->error);
+        if (!pending->broadcast) throw std::runtime_error("broadcast creation failed");
+        return pending->broadcast;
+    }
+
+    std::shared_ptr<Broadcast> broadcast;
+    try {
+        broadcast = std::make_shared<Broadcast>(infohash, config_, http_client_, params);
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            creating_.erase(infohash);
+        }
+        {
+            std::lock_guard<std::mutex> lock(pending->mutex);
+            pending->error = std::current_exception();
+            pending->done = true;
+        }
+        pending->cv.notify_all();
+        throw;
+    }
+
+    bool stop_created = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (shutting_down_) {
+            // Shutdown began while we were creating: do not keep a live session behind.
+            stop_created = true;
+        } else {
+            broadcasts_[infohash] = broadcast;
+        }
+        creating_.erase(infohash);
+    }
+    if (stop_created) broadcast->stop();
+    {
+        std::lock_guard<std::mutex> lock(pending->mutex);
+        pending->broadcast = broadcast;
+        pending->done = true;
+    }
+    pending->cv.notify_all();
     return broadcast;
 }
 
@@ -271,6 +323,7 @@ void BroadcastManager::stop_all() {
     std::map<std::string, std::shared_ptr<Broadcast>> copy;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        shutting_down_ = true;
         copy.swap(broadcasts_);
     }
     for (auto& [_, broadcast] : copy) broadcast->stop();

@@ -16,6 +16,53 @@
 namespace httpace {
 namespace {
 
+// How long a freshly accepted connection may take to deliver its request headers.
+constexpr int kRequestReadTimeoutSeconds = 10;
+// Delay between two AceStream STATUS polls during a channel test. The poll itself
+// already blocks up to a second, so this only stops the loop from being a hot poll.
+constexpr int kPeerPollIntervalMs = 250;
+constexpr int kPeerPollSliceMs = 50;
+
+// Always tears the AceStream control session down on every exit path of a channel
+// test, so an aborted test cannot leave a live P2P session or socket behind (S3, S7).
+class AceTestSession {
+public:
+    explicit AceTestSession(AceClient& ace) : ace_(&ace) {}
+    ~AceTestSession() { release(); }
+
+    AceTestSession(const AceTestSession&) = delete;
+    AceTestSession& operator=(const AceTestSession&) = delete;
+
+    void mark_broadcast_started() { broadcast_started_ = true; }
+
+private:
+    void release() {
+        if (!ace_) return;
+        AceClient* ace = ace_;
+        ace_ = nullptr;
+        if (broadcast_started_) {
+            try { ace->stop_broadcast(); } catch (...) {}
+        }
+        try { ace->shutdown(); } catch (...) {}
+    }
+
+    AceClient* ace_ = nullptr;
+    bool broadcast_started_ = false;
+};
+
+// Sleeps in short slices so a client disconnect is noticed promptly instead of only
+// after the whole poll interval. Returns false when the client went away.
+bool sleep_unless_disconnected(std::chrono::milliseconds total, const ClientConnection* connection) {
+    const auto deadline = std::chrono::steady_clock::now() + total;
+    for (;;) {
+        if (connection && connection->peer_closed()) return false;
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) return true;
+        std::this_thread::sleep_for(std::min(remaining, std::chrono::milliseconds(kPeerPollSliceMs)));
+    }
+}
+
 bool is_video_extension(const std::string& path) {
     static const std::set<std::string> exts = {
         "avi", "flv", "m2ts", "mkv", "mpeg", "mpeg4", "mpegts", "mpg4", "mp4",
@@ -184,6 +231,13 @@ void Proxy::start() {
     server_ = std::make_unique<HttpServer>(config_.http_host, config_.http_port,
         [this](const HttpRequest& request, ClientConnection& connection) { handle_http(request, connection); });
     server_->set_client_send_timeout(config_.client_write_timeout);
+    server_->set_client_recv_timeout(kRequestReadTimeoutSeconds);
+    // Bound the number of concurrently served connections. This is the server's own
+    // limit: Config::max_connections is enforced separately in handle_core_stream,
+    // where it caps concurrent streaming clients. Sizing it above the channel limit
+    // keeps short control requests (status polling, channel checks) serviceable while
+    // every stream slot is in use.
+    server_->set_max_connections(config_.max_http_connections);
     server_->start();
     log_line("INFO", "HTTPAceProxyCPP started at " + config_.http_host + ":" + std::to_string(config_.http_port));
     server_->join();
@@ -342,20 +396,20 @@ void Proxy::handle_core_stream(RequestContext& ctx) {
         }
         ctx.connection.send_response_headers(200, status_reason(200), headers);
 
-        std::vector<char> chunk;
+        ChunkPtr chunk;
         while (client->queue->pop(chunk)) {
             bool ok;
             if (chunked) {
                 std::ostringstream prefix;
-                prefix << std::hex << chunk.size() << "\r\n";
+                prefix << std::hex << chunk->size() << "\r\n";
                 ok = ctx.connection.send_text(prefix.str())
-                  && ctx.connection.send_all(chunk.data(), chunk.size())
+                  && ctx.connection.send_all(chunk->data(), chunk->size())
                   && ctx.connection.send_text("\r\n");
             } else {
-                ok = ctx.connection.send_all(chunk.data(), chunk.size());
+                ok = ctx.connection.send_all(chunk->data(), chunk->size());
             }
             if (!ok) break;
-            client->bytes_sent.fetch_add(static_cast<std::uint64_t>(chunk.size()), std::memory_order_relaxed);
+            client->bytes_sent.fetch_add(static_cast<std::uint64_t>(chunk->size()), std::memory_order_relaxed);
             client->last_activity.store(unix_time(), std::memory_order_relaxed);
         }
         if (chunked) ctx.connection.send_text("0\r\n\r\n");
@@ -573,36 +627,49 @@ Json Proxy::check_channel_light(const std::string& plugin_name, const std::strin
     if (cid.empty()) return Json::object{{"status", "error"}, {"error", "content_id required"}};
     try {
         AceClient ace(config_, "Check_" + cid.substr(0, 8));
+        AceTestSession session(ace);
         ace.authenticate();
         auto info = ace.content_info({{"content_id", cid}, {"sessionID", "0"}});
-        ace.shutdown();
         return Json::object{{"status", "success"}, {"cached", false}, {"available", true}, {"infohash", info["infohash"].as_string()}, {"checked_at", static_cast<double>(unix_time())}};
     } catch (const std::exception& e) {
         return Json::object{{"status", "success"}, {"cached", false}, {"available", false}, {"error", e.what()}, {"checked_at", static_cast<double>(unix_time())}};
     }
 }
 
-Json Proxy::check_channel_peers(const std::string& content_id, int max_wait) {
+Json Proxy::check_channel_peers(const std::string& content_id, int max_wait, const ClientConnection* connection) {
     if (content_id.empty()) return Json::object{{"status", "error"}, {"error", "content_id required"}};
     try {
         AceClient ace(config_, "PeerCheck_" + content_id.substr(0, 8));
+        // RAII: any exit path (success, timeout, client disconnect, exception) stops the
+        // P2P broadcast and shuts the control session down.
+        AceTestSession session(ace);
         ace.authenticate();
         auto info = ace.content_info({{"content_id", content_id}, {"sessionID", "0"}});
         auto params = std::map<std::string, std::string>{{"content_id", content_id}, {"file_indexes", "0"}, {"stream_type", config_.stream_type_string()}};
         ace.start_broadcast(params);
+        session.mark_broadcast_started();
         int peers = 0;
         int http_peers = 0;
         std::string status_text = "unknown";
-        auto start = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start < std::chrono::seconds(max_wait)) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, max_wait));
+        for (;;) {
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            // An aborted test must not keep a live P2P session: an active playback has
+            // absolute priority over channel testing.
+            if (connection && connection->peer_closed()) {
+                log_line("INFO", "channel test aborted: client disconnected (" + content_id.substr(0, 8) + ")");
+                break;
+            }
             auto stat = ace.status(1);
             status_text = value_or(stat, "status", status_text);
             try { peers = std::stoi(value_or(stat, "peers", "0")); } catch (...) {}
             try { http_peers = std::stoi(value_or(stat, "http_peers", "0")); } catch (...) {}
             if (peers > 0 || http_peers > 0 || status_text == "dl" || status_text == "prebuf" || status_text == "buf") break;
+            if (!sleep_unless_disconnected(std::chrono::milliseconds(kPeerPollIntervalMs), connection)) {
+                log_line("INFO", "channel test aborted: client disconnected (" + content_id.substr(0, 8) + ")");
+                break;
+            }
         }
-        ace.stop_broadcast();
-        ace.shutdown();
         int total = peers + http_peers;
         return Json::object{
             {"status", "success"}, {"cached", false}, {"available", total > 0 || status_text == "dl" || status_text == "prebuf" || status_text == "buf"},

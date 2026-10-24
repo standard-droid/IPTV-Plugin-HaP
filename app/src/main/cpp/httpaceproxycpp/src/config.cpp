@@ -64,6 +64,7 @@ Config load_config(int argc, char** argv) {
     cfg.http_port = getenv_int("ACEPROXY_PORT", cfg.http_port);
     cfg.max_connections = getenv_int("MAX_CONNECTIONS", cfg.max_connections);
     cfg.max_concurrent_channels = getenv_int("MAX_CONCURRENT_CHANNELS", cfg.max_concurrent_channels);
+    cfg.max_http_connections = getenv_int("MAX_HTTP_CONNECTIONS", cfg.max_http_connections);
     cfg.enabled_plugins = getenv_string("ENABLED_PLUGINS", cfg.enabled_plugins);
     cfg.aio_plugins = getenv_string("AIO_PLUGINS", cfg.aio_plugins);
     cfg.user_m3u_sources = getenv_string("USER_M3U_SOURCES", cfg.user_m3u_sources);

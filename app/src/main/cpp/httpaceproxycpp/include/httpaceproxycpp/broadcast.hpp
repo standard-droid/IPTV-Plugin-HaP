@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -25,11 +26,17 @@ enum class PushResult {
     Closed,
 };
 
+// One immutable chunk buffer, shared by every client queue that receives it, so the
+// fan-out never copies the payload once per client (S2, S5).
+using ChunkPtr = std::shared_ptr<const std::vector<char>>;
+
 class ChunkQueue {
 public:
     explicit ChunkQueue(std::size_t max_chunks);
-    PushResult push(std::vector<char> chunk, std::chrono::milliseconds wait);
-    bool pop(std::vector<char>& chunk);
+    // Never blocks: when the queue is full the oldest chunk is dropped. That is what
+    // lets the single shared reader thread ignore one stalled client (S2).
+    PushResult push(ChunkPtr chunk);
+    bool pop(ChunkPtr& chunk);
     void close();
     std::size_t size() const;
 
@@ -37,8 +44,7 @@ private:
     std::size_t max_chunks_;
     mutable std::mutex mutex_;
     std::condition_variable cv_data_;
-    std::condition_variable cv_space_;
-    std::deque<std::vector<char>> chunks_;
+    std::deque<ChunkPtr> chunks_;
     bool closed_ = false;
 };
 
@@ -109,10 +115,23 @@ public:
     void stop_all();
 
 private:
+    // One slot per infohash that is currently being constructed, so the blocking
+    // AceClient::authenticate() inside the Broadcast constructor runs without holding
+    // mutex_ while still yielding exactly one Broadcast per infohash.
+    struct PendingCreation {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done = false;
+        std::shared_ptr<Broadcast> broadcast;
+        std::exception_ptr error;
+    };
+
     Config config_;
     HttpClient& http_client_;
     mutable std::mutex mutex_;
     std::map<std::string, std::shared_ptr<Broadcast>> broadcasts_;
+    std::map<std::string, std::shared_ptr<PendingCreation>> creating_;
+    bool shutting_down_ = false;
 };
 
 } // namespace httpace

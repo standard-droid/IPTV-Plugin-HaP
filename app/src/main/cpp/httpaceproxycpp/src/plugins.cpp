@@ -512,7 +512,7 @@ public:
             int max_wait = 15;
             try { max_wait = std::stoi(query_get(ctx.query, "max_wait", "15")); } catch (...) {}
             max_wait = std::min(30, std::max(5, max_wait));
-            auto data = proxy_.check_channel_peers(query_get(ctx.query, "content_id"), max_wait);
+            auto data = proxy_.check_channel_peers(query_get(ctx.query, "content_id"), max_wait, &ctx.connection);
             send_bytes(ctx.connection, 200, "application/json; charset=utf-8", data.dump(2));
         } else {
             try {
