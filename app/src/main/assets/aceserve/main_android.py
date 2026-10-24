@@ -42,6 +42,16 @@ ANDROID_STORAGE = ANDROID_INFO.get("storage", {})
 ANDROID_DEVICE = ANDROID_INFO.get("device", {})
 
 CACHE_DIR = os.environ.get("ACE_CACHE_DIR", ANDROID_PATHS.get("cacheDir", os.path.join(ACE_ROOT, "cache")))
+
+# Single source of truth for the AceServe live stream cache: 100 MiB (104857600
+# bytes). AceServeRuntime.java passes the same value as
+# --live-mem-cache-size, so the value enforced here matches the declared one.
+# Previously this file overrode it with 1048570000 (~1000 MiB), i.e. 10x the
+# intended size, which is unsafe inside a 32-bit process on a 2 GB device and
+# made the Java flag misleading. Keep this value if you touch the cache config:
+# the live cache size is a product constraint, not a tuning knob.
+LIVE_CACHE_SIZE_BYTES = 104857600
+
 ANDROID_DATA_DIR = os.environ.get("ANDROID_DATA", ANDROID_PATHS.get("androidDataDir", root_path("android-data")))
 TEMP_DIR = os.environ.get("TEMP", ANDROID_PATHS.get("tempDir", root_path("tmp")))
 
@@ -188,7 +198,7 @@ def patch_player_config():
                 if cls_name == "CoreApp" and hasattr(obj, "set_playerconfig"):
                     log("CoreApp detected; applying cache settings")
                     obj.set_playerconfig("live_cache_type", "disk")
-                    obj.set_playerconfig("live_cache_size", 1048570000)
+                    obj.set_playerconfig("live_cache_size", LIVE_CACHE_SIZE_BYTES)
                     obj.set_playerconfig("download_dir", CACHE_DIR)
                     original_set = obj.set_playerconfig
 
@@ -259,7 +269,7 @@ def install_android_compat_module():
                 return json.dumps({
                     "live_cache_type": "disk",
                     "cache_dir": CACHE_DIR,
-                    "live_cache_size": 1048570000,
+                    "live_cache_size": LIVE_CACHE_SIZE_BYTES,
                 })
             if method == "getDeviceId":
                 return ANDROID_DEVICE.get("deviceId", "android")
