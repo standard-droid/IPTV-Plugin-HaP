@@ -155,20 +155,29 @@ def log(message):
         pass
 
 def cache_monitor():
+    last_reported = None
     while True:
         try:
             total_size = 0
             for dirpath, _, filenames in os.walk(CACHE_DIR):
                 for name in filenames:
                     total_size += os.path.getsize(os.path.join(dirpath, name))
-            if total_size > 0:
-                log("cache {:.2f} MB".format(total_size / (1024 * 1024)))
+            reported = "{:.2f}".format(total_size / (1024 * 1024))
+            if total_size > 0 and reported != last_reported:
+                log("cache {} MB".format(reported))
+                last_reported = reported
         except Exception:
             pass
         time.sleep(15)
 
+# gc.get_objects() walks every live Python object while holding the GIL, so poll
+# quickly only during engine startup and back off once it is running.
+PATCHER_FAST_POLL_SECONDS = 60
+PATCHER_SLOW_POLL_INTERVAL = 30
+
 def patch_player_config():
     patched_ids = set()
+    started = time.monotonic()
     while True:
         for obj in gc.get_objects():
             try:
@@ -203,7 +212,8 @@ def patch_player_config():
                     patched_ids.add(oid)
             except Exception:
                 pass
-        time.sleep(0.5)
+        starting = not patched_ids and time.monotonic() - started < PATCHER_FAST_POLL_SECONDS
+        time.sleep(0.5 if starting else PATCHER_SLOW_POLL_INTERVAL)
 
 threading.Thread(target=cache_monitor, name="cache-monitor", daemon=True).start()
 threading.Thread(target=patch_player_config, name="ace-patcher", daemon=True).start()

@@ -93,6 +93,11 @@ public class HapConfigActivity extends Activity {
     private EditText ipfsGatewayPortEdit;
     private EditText ipfsStorageMaxEdit;
     private TextView ipfsAdvancedFeedbackView;
+    private EditText engineCacheEdit;
+    private Switch engineUpnpSwitch;
+    private Switch engineDebugSwitch;
+    private EditText engineExtraOptionsEdit;
+    private TextView engineFeedbackView;
     private EditText sourceNameEdit;
     private EditText sourceUrlEdit;
     private TextView sourceFeedbackView;
@@ -127,6 +132,7 @@ public class HapConfigActivity extends Activity {
         refreshConfigState();
         refreshRuntimeState();
         populateIpfsAdvancedFields();
+        populateEngineFields();
     }
 
     @Override
@@ -181,6 +187,7 @@ public class HapConfigActivity extends Activity {
 
         root.addView(buildHeaderPanel(), matchWrap());
         root.addView(buildExternalPlayersPanel(), matchWrapTop(12));
+        root.addView(buildEnginePanel(), matchWrapTop(12));
         root.addView(buildIpfsPanel(), matchWrapTop(12));
         root.addView(buildAioPanel(), matchWrapTop(12));
         root.addView(buildSourcesPanel(), matchWrapTop(12));
@@ -307,6 +314,71 @@ public class HapConfigActivity extends Activity {
         row.addView(externalServerSwitch, wrapWrap());
 
         return panel.container;
+    }
+
+    private View buildEnginePanel() {
+        PanelViews panel = panel(getString(R.string.section_engine), true, false);
+
+        TextView hint = text(getString(R.string.message_engine_detail), 13, COLOR_TEXT_SECONDARY, Typeface.NORMAL);
+        hint.setPadding(0, 0, 0, dp(10));
+        panel.body.addView(hint, matchWrap());
+
+        panel.body.addView(text(getString(R.string.label_engine_live_cache), 13, COLOR_TEXT_PRIMARY, Typeface.BOLD), matchWrap());
+        engineCacheEdit = editText(getString(R.string.label_engine_live_cache), false);
+        engineCacheEdit.setInputType(InputType.TYPE_CLASS_NUMBER);
+        panel.body.addView(engineCacheEdit, matchWrapTop(6));
+
+        engineUpnpSwitch = engineSwitchRow(panel.body, R.string.label_engine_upnp, R.string.message_engine_upnp_detail);
+        engineDebugSwitch = engineSwitchRow(panel.body, R.string.label_engine_debug_logging, R.string.message_engine_debug_logging_detail);
+
+        TextView extraLabel = text(getString(R.string.label_engine_extra_options), 13, COLOR_TEXT_PRIMARY, Typeface.BOLD);
+        extraLabel.setPadding(0, dp(12), 0, 0);
+        panel.body.addView(extraLabel, matchWrap());
+        TextView extraDetail = text(getString(R.string.message_engine_extra_options_detail), 12, COLOR_TEXT_TERTIARY, Typeface.NORMAL);
+        extraDetail.setPadding(0, dp(3), 0, 0);
+        panel.body.addView(extraDetail, matchWrap());
+        engineExtraOptionsEdit = editText(getString(R.string.hint_engine_extra_options), true);
+        engineExtraOptionsEdit.setTypeface(Typeface.MONOSPACE);
+        panel.body.addView(engineExtraOptionsEdit, matchWrapTop(6));
+
+        LinearLayout saveRow = new LinearLayout(this);
+        saveRow.setOrientation(LinearLayout.HORIZONTAL);
+        saveRow.setGravity(Gravity.RIGHT);
+        saveRow.setPadding(0, dp(10), 0, 0);
+        panel.body.addView(saveRow, matchWrap());
+
+        Button save = button(getString(R.string.button_save));
+        save.setOnClickListener(v -> saveEngineSettings());
+        saveRow.addView(save, wrapWrap());
+
+        engineFeedbackView = text("", 13, COLOR_TEXT_SECONDARY, Typeface.NORMAL);
+        engineFeedbackView.setPadding(0, dp(8), 0, 0);
+        engineFeedbackView.setVisibility(View.GONE);
+        panel.body.addView(engineFeedbackView, matchWrap());
+
+        return panel.container;
+    }
+
+    private Switch engineSwitchRow(LinearLayout parent, int labelRes, int detailRes) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(12), 0, 0);
+        parent.addView(row, matchWrap());
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        left.addView(text(getString(labelRes), 13, COLOR_TEXT_PRIMARY, Typeface.BOLD), matchWrap());
+        TextView detail = text(getString(detailRes), 12, COLOR_TEXT_TERTIARY, Typeface.NORMAL);
+        detail.setPadding(0, dp(3), 0, 0);
+        left.addView(detail, matchWrap());
+
+        Switch toggle = new Switch(this);
+        toggle.setPadding(dp(10), 0, 0, 0);
+        busyControls.add(toggle);
+        row.addView(toggle, wrapWrap());
+        return toggle;
     }
 
     private View buildIpfsPanel() {
@@ -1164,6 +1236,41 @@ public class HapConfigActivity extends Activity {
         ipfsExternalPortEdit.setText(String.valueOf(HapBridge.ipfsExternalPort(this)));
         ipfsGatewayPortEdit.setText(String.valueOf(HapBridge.ipfsGatewayPort(this)));
         ipfsStorageMaxEdit.setText(String.valueOf(HapBridge.ipfsStorageMaxGb(this)));
+    }
+
+    private void saveEngineSettings() {
+        int liveCacheMb = parseIntOrDefault(engineCacheEdit.getText().toString(), -1);
+        boolean upnp = engineUpnpSwitch.isChecked();
+        boolean debug = engineDebugSwitch.isChecked();
+        String extraOptions = engineExtraOptionsEdit.getText().toString();
+        showEngineFeedback(getString(R.string.message_saving_engine_settings), COLOR_BRAND);
+        setBusy(true);
+        executor.execute(() -> {
+            HapBridge.SaveResult result = HapBridge.saveEngineSettings(this, liveCacheMb, upnp, debug, extraOptions);
+            main(() -> {
+                setBusy(false);
+                showEngineFeedback(result.message, result.success ? COLOR_SUCCESS : COLOR_ERROR);
+                refreshRuntimeState();
+            });
+        });
+    }
+
+    private void populateEngineFields() {
+        engineCacheEdit.setText(String.valueOf(HapBridge.engineLiveCacheMb(this)));
+        engineUpnpSwitch.setChecked(HapBridge.isEngineUpnpEnabled(this));
+        engineDebugSwitch.setChecked(HapBridge.isEngineDebugLoggingEnabled(this));
+        engineExtraOptionsEdit.setText(HapBridge.engineExtraOptions(this));
+    }
+
+    private void showEngineFeedback(String message, int color) {
+        if (engineFeedbackView == null) return;
+        if (message == null || message.trim().isEmpty()) {
+            engineFeedbackView.setVisibility(View.GONE);
+            return;
+        }
+        engineFeedbackView.setTextColor(color);
+        engineFeedbackView.setText(message);
+        engineFeedbackView.setVisibility(View.VISIBLE);
     }
 
     private void showIpfsAdvancedFeedback(String message, int color) {

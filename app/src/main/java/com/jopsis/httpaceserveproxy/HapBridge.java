@@ -184,6 +184,41 @@ public final class HapBridge {
         return new SaveResult(true, context.getString(R.string.message_ipfs_settings_saved));
     }
 
+    public static int engineLiveCacheMb(Context context) {
+        return EngineSettings.liveCacheMb(context);
+    }
+
+    public static boolean isEngineUpnpEnabled(Context context) {
+        return EngineSettings.isUpnpEnabled(context);
+    }
+
+    public static boolean isEngineDebugLoggingEnabled(Context context) {
+        return EngineSettings.isDebugLoggingEnabled(context);
+    }
+
+    public static String engineExtraOptions(Context context) {
+        return EngineSettings.extraOptions(context);
+    }
+
+    public static SaveResult saveEngineSettings(
+            Context context, int liveCacheMb, boolean upnpEnabled, boolean debugLogging, String extraOptions) {
+        if (liveCacheMb < EngineSettings.LIVE_CACHE_MB_MIN || liveCacheMb > EngineSettings.LIVE_CACHE_MB_MAX) {
+            return new SaveResult(false, context.getString(R.string.error_engine_cache_invalid,
+                    EngineSettings.LIVE_CACHE_MB_MIN, EngineSettings.LIVE_CACHE_MB_MAX));
+        }
+        for (String token : EngineSettings.parseExtraOptions(extraOptions)) {
+            if (token.contains(" ") && token.startsWith("-")) {
+                return new SaveResult(false, context.getString(R.string.error_engine_option_format, token));
+            }
+        }
+        EngineSettings.save(context, liveCacheMb, upnpEnabled, debugLogging, extraOptions);
+        if (ServiceState.desiredRunning) {
+            restart(context);
+            return new SaveResult(true, context.getString(R.string.message_engine_settings_saved_restarting));
+        }
+        return new SaveResult(true, context.getString(R.string.message_engine_settings_saved));
+    }
+
     public static void setExternalPlayerServerEnabled(Context context, boolean enabled) {
         ProxyExposure.setExternalPlayerServerEnabled(context, enabled);
     }

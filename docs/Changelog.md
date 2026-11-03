@@ -2,6 +2,38 @@
 
 All notable changes to HaP will be documented here.
 
+## [1.3.4] - 2026-11-03
+
+### Added
+
+- An "Ace engine" section in the HaP screen to set the live memory cache
+  size, UPnP port mapping, engine debug logging, and extra engine options
+  (one option or value per line, as in `acestream.conf`). Saving restarts
+  the engine if HaP is running. The defaults pass the same arguments as
+  before (100 MB live cache, UPnP off, no debug logging).
+
+### Changed
+
+- The bundled AceServe `acestream.conf` enabled engine debug logging
+  (`--log-debug 355`, `--log-modules root:D` and four `--debug-*` flags). The
+  engine reads this file from its working directory on every start, so HaP
+  now strips those options from the extracted copy during `prepare()`. This
+  also applies to existing installs without re-extracting the zip.
+- AceServe output is no longer mirrored line by line to logcat, where Android
+  was dropping hundreds of `HaP-AceServe` lines every few seconds. It still
+  goes to the in-app log; enable logcat output with
+  `adb shell setprop log.tag.HaP-AceServe DEBUG` and restart HaP.
+- The cache monitor only logs when the cache size changes instead of every
+  15 seconds.
+
+### Fixed
+
+- The `ace-patcher` thread in `main_android.py` scanned every live Python
+  object (`gc.get_objects()`) every 0.5 seconds for as long as the engine
+  ran, because `CoreApp` is never created on the `aceserve.main()` start
+  path. It now polls quickly only for the first 60 seconds and then every
+  30 seconds.
+
 ## [1.3.3] - 2026-09-09
 
 ### Fixed

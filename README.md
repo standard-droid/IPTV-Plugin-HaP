@@ -60,6 +60,8 @@ The screen contains:
 - Runtime summary: color-coded runtime state, phase, AIO URL, LAN URL, and
   runtime actions.
 - External players: a persistent server switch for standalone use.
+- Ace engine: live cache size, UPnP, engine debug logging, and extra engine
+  options. Collapsed by default.
 - IPFS: a local IPFS gateway switch, with an advanced section for external
   node mode.
 - AIO and LAN server: copyable local/LAN M3U and EPG URLs.
@@ -86,6 +88,24 @@ When enabled, HaP:
 
 Use the local URL when the IPTV player runs on the same Android device. Use the
 LAN URL when the player runs on another device on the same network.
+
+### Ace Engine
+
+The Ace engine section sets the AceServe options HaP passes on the engine's
+command line. Saving restarts the engine if HaP is running.
+
+- Live cache in memory (MB): `--live-mem-cache-size`, 100 MB by default,
+  16-1024 MB.
+- UPnP port mapping: off by default (`--disable-upnp`).
+- Engine debug logging: off by default. When on, HaP passes
+  `--log-debug 355 --log-modules root:D`.
+- Extra engine options: one option or value per line, in the same format as
+  `acestream.conf`. Blank lines and lines starting with `#` are ignored.
+  An option the engine does not accept can keep it from starting; clear the
+  field and save to undo.
+
+Engine output goes to the in-app log. To also send it to logcat, run
+`adb shell setprop log.tag.HaP-AceServe DEBUG` and restart HaP.
 
 ### IPFS
 
@@ -292,7 +312,7 @@ $HOME/Library/Android/sdk/platform-tools/adb install -r app/build/outputs/apk/un
 ```
 
 After installation, refresh StreamVault's Plugins screen. The HaP plugin should
-appear as `HaP`, version `1.3.3`, with `configuration.activity`.
+appear as `HaP`, version `1.3.4`, with `configuration.activity`.
 
 The configuration activity can also be opened directly:
 

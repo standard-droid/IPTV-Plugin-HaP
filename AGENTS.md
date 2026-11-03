@@ -29,7 +29,8 @@ context.
 - `app/src/main/java/com/jopsis/httpaceserveproxy/` contains the HaP runtime
   facade and Android-side proxy logic. `HapBridge` is the central facade;
   `ProxySupervisorService` owns foreground startup/shutdown; `AceServeRuntime`
-  prepares and runs the bundled Python/AceServe runtime; `IpfsRuntime` (with
+  prepares and runs the bundled Python/AceServe runtime, taking user engine
+  options from `EngineSettings`; `IpfsRuntime` (with
   `IpfsSettings` and `IpfsHealthClient`) prepares and runs the bundled kubo
   (IPFS) daemon on its own supervisor thread, independent of AceServe/proxy.
 - `PlaylistCatalog`, `CustomPlaylistCatalog`, and `SourceValidator` own user

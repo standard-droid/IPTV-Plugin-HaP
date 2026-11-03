@@ -12,6 +12,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,7 @@ final class AceServeRuntime {
         }
         AssetCopier.copyFile(context, "aceserve/main_android.py", new File(root, "main_android.py"));
         deletePythonBridge(root);
+        stripEngineDebugOptions(new File(root, "acestream.conf"));
     }
 
     synchronized void start() throws IOException {
@@ -78,12 +80,11 @@ final class AceServeRuntime {
         command.add("--bind-all");
         command.add("--live-cache-type");
         command.add("memory");
-        command.add("--live-mem-cache-size");
-        command.add("104857600");
         command.add("--disable-sentry");
         command.add("--log-stdout");
-        command.add("--disable-upnp");
+        command.addAll(EngineSettings.commandArguments(context));
         Log.i(TAG, "start command=" + command);
+        ServiceState.appendLog("engine options: " + String.join(" ", command.subList(2, command.size())));
 
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(root);
@@ -169,9 +170,12 @@ final class AceServeRuntime {
             if (current == null) return;
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(current.getInputStream()))) {
                 String line;
+                // Engine output still reaches the in-app log; logcat only gets it when enabled
+                // with `adb shell setprop log.tag.HaP-AceServe DEBUG`.
+                boolean toLogcat = Log.isLoggable(TAG, Log.DEBUG);
                 while ((line = reader.readLine()) != null) {
                     ServiceState.appendLog("ace: " + line);
-                    Log.i(TAG, line);
+                    if (toLogcat) Log.d(TAG, line);
                 }
                 try {
                     Log.i(TAG, "process output ended exit=" + current.waitFor());
@@ -263,6 +267,47 @@ final class AceServeRuntime {
         if (cached == null) return;
         for (File file : cached) {
             if (file.getName().startsWith("app_bridge.")) deleteIfExists(file);
+        }
+    }
+
+    // The bundled AceServe acestream.conf turns on debug logging. The engine reads it
+    // from its working directory on every start, and the zip is only extracted once,
+    // so rewrite the extracted copy instead of editing the vendored zip.
+    private static void stripEngineDebugOptions(File conf) {
+        if (!conf.isFile()) return;
+        List<String> kept = new ArrayList<>();
+        boolean changed = false;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(conf), StandardCharsets.UTF_8))) {
+            String line;
+            boolean skipValue = false;
+            while ((line = reader.readLine()) != null) {
+                String option = line.trim();
+                if (skipValue) {
+                    skipValue = false;
+                    changed = true;
+                    continue;
+                }
+                if ("--log-debug".equals(option) || "--log-modules".equals(option)) {
+                    skipValue = true;
+                    changed = true;
+                    continue;
+                }
+                if (option.startsWith("--debug-")) {
+                    changed = true;
+                    continue;
+                }
+                kept.add(line);
+            }
+        } catch (IOException e) {
+            ServiceState.appendLog("warning: could not read " + conf + ": " + e);
+            return;
+        }
+        if (!changed) return;
+        try (FileOutputStream output = new FileOutputStream(conf)) {
+            for (String line : kept) output.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+            Log.i(TAG, "removed debug options from " + conf);
+        } catch (IOException e) {
+            ServiceState.appendLog("warning: could not rewrite " + conf + ": " + e);
         }
     }
 
