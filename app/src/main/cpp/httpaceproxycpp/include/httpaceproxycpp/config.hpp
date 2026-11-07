@@ -25,6 +25,9 @@ struct Config {
     int video_seekback = 0;
     int client_queue_size = 256;
     int client_write_timeout = 15;
+    // Engine sessions rebuilt per broadcast after its stream drops, before giving up.
+    // The count resets once a session has streamed for 60 s.
+    int reconnect_attempts = 5;
     int curl_stream_buffer = 1048576;
     bool use_chunked = true;
     bool firewall = false;

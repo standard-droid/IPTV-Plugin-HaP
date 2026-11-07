@@ -13,6 +13,9 @@ import com.streamvault.plugin.hap.HapConfigActivity;
 import com.streamvault.plugin.hap.R;
 
 import java.io.File;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class ProxySupervisorService extends Service {
     static final String ACTION_START = "com.jopsis.httpaceserveproxy.START";
@@ -34,6 +37,14 @@ public class ProxySupervisorService extends Service {
     private volatile Thread proxyRestartThread;
     private volatile Thread ipfsSupervisorThread;
     private volatile Thread ipfsStopThread;
+    // Watchdog (adapted from the pedrosc10 fork): restarts AceServe or the proxy when
+    // one stops answering while the user wants HaP running.
+    private static final int WATCHDOG_MAX_FAILED_RECOVERIES = 3;
+    private ScheduledExecutorService watchdog;
+    private volatile boolean serverWanted;
+    private volatile int unhealthyTicks;
+    private volatile int failedRecoveries;
+    private volatile long lastRecoveryAt;
 
     @Override
     public void onCreate() {
@@ -48,6 +59,8 @@ public class ProxySupervisorService extends Service {
         String action = intent == null ? ACTION_START : intent.getAction();
         if (ACTION_STOP.equals(action)) {
             startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_stopping), false));
+            serverWanted = false;
+            stopWatchdog();
             stopAll(true);
             stopIpfsForShutdown();
             clearNotification();
@@ -66,6 +79,8 @@ public class ProxySupervisorService extends Service {
         }
         ServiceState.desiredRunning = true;
         startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.status_starting), true));
+        serverWanted = true;
+        startWatchdog();
         if (ACTION_RESTART_PROXY.equals(action)) {
             startProxyRestart();
             return START_STICKY;
@@ -86,6 +101,8 @@ public class ProxySupervisorService extends Service {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         if (!ServiceState.desiredRunning) {
+            serverWanted = false;
+            stopWatchdog();
             stopAll(true);
             stopIpfsForShutdown();
             clearNotification();
@@ -96,6 +113,8 @@ public class ProxySupervisorService extends Service {
 
     @Override
     public void onDestroy() {
+        serverWanted = false;
+        stopWatchdog();
         stopAll(true);
         stopIpfsForShutdown();
         clearNotification();
@@ -424,5 +443,64 @@ public class ProxySupervisorService extends Service {
     private void updateNotification(String text) {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         manager.notify(NOTIFICATION_ID, buildNotification(text));
+    }
+
+    private synchronized void startWatchdog() {
+        // Every start request re-arms a watchdog that gave up.
+        unhealthyTicks = 0;
+        failedRecoveries = 0;
+        if (watchdog != null) return;
+        watchdog = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "hap-watchdog"));
+        watchdog.scheduleWithFixedDelay(this::watchdogTick, 20, 15, TimeUnit.SECONDS);
+    }
+
+    private synchronized void stopWatchdog() {
+        if (watchdog == null) return;
+        watchdog.shutdownNow();
+        watchdog = null;
+    }
+
+    private static boolean isAlive(Thread thread) {
+        return thread != null && thread.isAlive();
+    }
+
+    /**
+     * Every 15 s: if AceServe or the proxy stopped answering for two checks in a row,
+     * restart what died, at most once a minute. After three recoveries in a row that
+     * never got back to healthy it stops trying, so an engine that cannot start is not
+     * restarted forever; the next start from the HaP screen re-arms it.
+     */
+    private void watchdogTick() {
+        try {
+            if (!serverWanted) return;
+            if (isAlive(supervisorThread) || isAlive(proxyRestartThread)) return;
+            boolean aceUp = aceServe != null && aceServe.isRunning()
+                    && HealthClient.waitForTcp("127.0.0.1", ACE_HTTP_PORT, 1500);
+            boolean proxyUp = HealthClient.waitForTcp(ProxyExposure.LOCAL_HOST, ProxyExposure.PROXY_PORT, 1500);
+            if (aceUp && proxyUp) {
+                unhealthyTicks = 0;
+                failedRecoveries = 0;
+                return;
+            }
+            if (++unhealthyTicks < 2) return;
+            if (failedRecoveries >= WATCHDOG_MAX_FAILED_RECOVERIES) return;
+            long now = System.currentTimeMillis();
+            if (now - lastRecoveryAt < 60_000) return;
+            lastRecoveryAt = now;
+            unhealthyTicks = 0;
+            failedRecoveries++;
+            ServiceState.appendLog("watchdog: engine=" + (aceUp ? "up" : "down")
+                    + " proxy=" + (proxyUp ? "up" : "down") + ", recovering ("
+                    + failedRecoveries + "/" + WATCHDOG_MAX_FAILED_RECOVERIES + ")");
+            if (!serverWanted) return;
+            if (!aceUp) {
+                stopAll(false);
+                if (serverWanted) startAll();
+            } else {
+                startProxyRestart();
+            }
+        } catch (Throwable t) {
+            ServiceState.appendLog("watchdog error: " + t);
+        }
     }
 }

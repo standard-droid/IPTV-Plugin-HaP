@@ -245,7 +245,13 @@ std::vector<std::string> AceClient::wait_for(const std::string& command, int tim
 
 void AceClient::push_message(const std::vector<std::string>& tokens) {
     std::lock_guard<std::mutex> lock(mutex_);
-    messages_[tokens[0]].push_back(tokens);
+    auto& queue = messages_[tokens[0]];
+    queue.push_back(tokens);
+    // The engine pushes STATUS about once a second for the whole broadcast and nothing
+    // reads most of them; keep only the newest few so the queue can't grow without bound.
+    if (tokens[0] == "STATUS") {
+        while (queue.size() > 5) queue.pop_front();
+    }
     cv_.notify_all();
 }
 

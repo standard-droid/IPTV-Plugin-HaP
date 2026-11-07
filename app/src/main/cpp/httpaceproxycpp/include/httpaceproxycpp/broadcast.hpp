@@ -78,14 +78,25 @@ public:
     std::vector<std::shared_ptr<StreamClient>> clients() const;
     void start_once();
     void stop();
-    std::shared_ptr<AceClient> ace() const { return ace_; }
+    std::shared_ptr<AceClient> ace() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return ace_;
+    }
+    // True once the stream thread has given up or the broadcast was stopped. Such a
+    // broadcast never sends data again, so it must not receive new clients.
+    bool finished() const { return stopped_ || (started_ && !running_); }
     std::string infohash() const { return infohash_; }
 
 private:
     void stream_loop();
+    bool run_attempt();
     void stream_http_url(const std::string& url);
     void stream_hls_url(const std::string& url);
-    void broadcast_chunk(const char* data, std::size_t size);
+    void broadcast_chunk(const char* data, std::size_t size, bool keepalive = false);
+    void send_keepalive();
+    void wait_with_keepalive(int seconds);
+    std::shared_ptr<AceClient> take_ace();
+    bool install_ace(const std::shared_ptr<AceClient>& next);
 
     std::string infohash_;
     Config config_;
@@ -97,6 +108,12 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> started_{false};
     std::atomic<bool> stopped_{false};
+    // Set once the first chunk shows the engine sends raw MPEG-TS, which is what makes
+    // TS null-packet keepalives safe to send during a reconnect.
+    std::atomic<bool> ts_output_{false};
+    // Whether the current engine session has relayed any real data yet.
+    std::atomic<bool> any_data_{false};
+    std::mutex chunk_mutex_;
     std::thread stream_thread_;
 };
 

@@ -205,7 +205,7 @@ def patch_player_config():
                 cls_name = type(obj).__name__
                 if cls_name == "CoreApp" and hasattr(obj, "set_playerconfig"):
                     log("CoreApp detected; applying cache settings")
-                    obj.set_playerconfig("live_cache_type", "disk")
+                    obj.set_playerconfig("live_cache_type", "memory")
                     obj.set_playerconfig("live_cache_size", LIVE_CACHE_SIZE_BYTES)
                     obj.set_playerconfig("download_dir", CACHE_DIR)
                     original_set = obj.set_playerconfig
@@ -213,7 +213,7 @@ def patch_player_config():
                     @wraps(original_set)
                     def wrapped_set(key, value, *args, **kwargs):
                         if key == "live_cache_type":
-                            value = "disk"
+                            value = "memory"
                         if key == "download_dir":
                             value = CACHE_DIR
                         return original_set(key, value, *args, **kwargs)
@@ -275,7 +275,7 @@ def install_android_compat_module():
                 return int_value(ANDROID_MEMORY, "memoryClassMb", 64)
             if method == "adjustCacheSettings":
                 return json.dumps({
-                    "live_cache_type": "disk",
+                    "live_cache_type": "memory",
                     "cache_dir": CACHE_DIR,
                     "live_cache_size": LIVE_CACHE_SIZE_BYTES,
                 })

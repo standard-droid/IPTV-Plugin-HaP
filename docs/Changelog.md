@@ -4,7 +4,22 @@ All notable changes to HaP will be documented here.
 
 ## [1.3.5] - 2026-11-07
 
-Two changes cherry-picked from the albersg/IPTV-Plugin-HaP fork.
+Two changes cherry-picked from the albersg/IPTV-Plugin-HaP fork, and stream
+recovery adapted from the pedrosc10/IPTV-Plugin-HaP fork.
+
+### Added
+
+- When the engine stream of a channel drops while players are still
+  connected, HTTPAceProxy keeps their connections open and starts a new
+  engine session, up to 5 times (2, 4, 6, 8 and 8 seconds apart; the count
+  resets after 60 seconds of streaming). Until the new session delivers data,
+  players get MPEG-TS null packets, which they discard, so their read timeout
+  does not fire. HLS streams hand over to this after 5 failed playlist
+  refreshes instead of retrying forever.
+- A watchdog checks AceServe and HTTPAceProxy every 15 seconds while HaP is
+  meant to be running. If one stops answering for two checks in a row it
+  restarts it, at most once a minute, and stops trying after three
+  recoveries in a row that do not bring it back.
 
 ### Changed
 
@@ -23,8 +38,15 @@ Two changes cherry-picked from the albersg/IPTV-Plugin-HaP fork.
 - `main_android.py` told the engine to use a live cache of 1048570000 bytes
   (about 1000 MB) whenever it asked for cache settings, overriding the "Live
   cache" value set in the Ace engine section. It now uses the same value,
-  which HaP passes in `ACE_LIVE_CACHE_BYTES` (default 100 MB). The cache type
-  the engine is told to use is still `disk`, as before.
+  which HaP passes in `ACE_LIVE_CACHE_BYTES` (default 100 MB).
+- The same code also told the engine to keep that cache on disk, while HaP
+  starts it with `--live-cache-type memory`. It now says `memory` too, so the
+  live cache can no longer end up on internal storage.
+- A new client could be attached to a channel whose stream had already
+  ended and then wait forever for data. Such a channel is now replaced with
+  a fresh one.
+- The engine connection queued every STATUS message (about one a second)
+  for the whole broadcast; it now keeps only the newest 5.
 
 ## [1.3.4] - 2026-11-03
 

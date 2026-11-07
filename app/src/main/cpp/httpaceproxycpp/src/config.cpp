@@ -76,6 +76,7 @@ Config load_config(int argc, char** argv) {
     cfg.client_queue_size = getenv_int("CLIENT_QUEUE_SIZE", cfg.client_queue_size);
     cfg.client_write_timeout = getenv_int("CLIENT_WRITE_TIMEOUT", cfg.client_write_timeout);
     cfg.curl_stream_buffer = getenv_int("CURL_STREAM_BUFFER", cfg.curl_stream_buffer);
+    cfg.reconnect_attempts = getenv_int("RECONNECT_ATTEMPTS", cfg.reconnect_attempts);
 
     if (argc > 0 && argv && argv[0]) {
         std::filesystem::path exe(argv[0]);
