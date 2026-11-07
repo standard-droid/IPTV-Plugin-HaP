@@ -2,6 +2,30 @@
 
 All notable changes to HaP will be documented here.
 
+## [1.3.5] - 2026-11-07
+
+Two changes cherry-picked from the albersg/IPTV-Plugin-HaP fork.
+
+### Changed
+
+- The HTTPAceProxy broadcast reader no longer waits on each client in turn.
+  A client that falls behind now drops its own oldest chunk instead of
+  stalling the engine reader and every other client on the same channel, and
+  clients share one buffer per chunk instead of a copy each.
+- The proxy's HTTP server limits concurrent connections (32; extra requests
+  get 503), times out clients that connect and send nothing, backs off when
+  it runs out of file descriptors instead of spinning, and sends large bodies
+  in full. Channel peer tests stop their engine session when the client goes
+  away.
+
+### Fixed
+
+- `main_android.py` told the engine to use a live cache of 1048570000 bytes
+  (about 1000 MB) whenever it asked for cache settings, overriding the "Live
+  cache" value set in the Ace engine section. It now uses the same value,
+  which HaP passes in `ACE_LIVE_CACHE_BYTES` (default 100 MB). The cache type
+  the engine is told to use is still `disk`, as before.
+
 ## [1.3.4] - 2026-11-03
 
 ### Added

@@ -93,6 +93,7 @@ final class AceServeRuntime {
         env.put("ACE_ROOT", root.getAbsolutePath());
         env.put("ACE_CACHE_DIR", cache.getAbsolutePath());
         env.put("ACE_ANDROID_INFO", androidInfo.getAbsolutePath());
+        env.put("ACE_LIVE_CACHE_BYTES", String.valueOf(EngineSettings.liveCacheBytes(context)));
         env.put("ACESTREAM_HOME", root.getAbsolutePath());
         env.put("ANDROID_ROOT", "/system");
         env.put("ANDROID_DATA", new File(root, "android-data").getAbsolutePath());

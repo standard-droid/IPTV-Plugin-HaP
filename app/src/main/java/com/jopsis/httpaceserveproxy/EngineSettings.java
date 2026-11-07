@@ -24,6 +24,11 @@ final class EngineSettings {
         return prefs(context).getInt(KEY_LIVE_CACHE_MB, LIVE_CACHE_MB_DEFAULT);
     }
 
+    /** The live cache size in bytes, as passed to the engine and to main_android.py. */
+    static long liveCacheBytes(Context context) {
+        return (long) liveCacheMb(context) * 1024 * 1024;
+    }
+
     static boolean isUpnpEnabled(Context context) {
         return prefs(context).getBoolean(KEY_UPNP_ENABLED, false);
     }
@@ -50,7 +55,7 @@ final class EngineSettings {
     static List<String> commandArguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--live-mem-cache-size");
-        args.add(String.valueOf((long) liveCacheMb(context) * 1024 * 1024));
+        args.add(String.valueOf(liveCacheBytes(context)));
         if (!isUpnpEnabled(context)) args.add("--disable-upnp");
         if (isDebugLoggingEnabled(context)) {
             args.add("--log-debug");
