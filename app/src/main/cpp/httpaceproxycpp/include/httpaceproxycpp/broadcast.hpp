@@ -111,6 +111,7 @@ private:
     // Set once the first chunk shows the engine sends raw MPEG-TS, which is what makes
     // TS null-packet keepalives safe to send during a reconnect.
     std::atomic<bool> ts_output_{false};
+    int ts_probe_chunks_ = 0;  // guarded by chunk_mutex_
     // Whether the current engine session has relayed any real data yet.
     std::atomic<bool> any_data_{false};
     std::mutex chunk_mutex_;

@@ -2,6 +2,31 @@
 
 All notable changes to HaP will be documented here.
 
+## [1.3.6] - 2026-11-07
+
+Fixes found while testing 1.3.5 on an Amlogic S912 box with Vimu.
+
+### Changed
+
+- When the AceServe process dies but HTTPAceProxy still answers, the
+  watchdog now restarts AceServe alone and leaves the proxy running, so
+  players stay connected and the proxy's reconnect resumes them. Before,
+  it restarted both, which closed every player connection. It also acts on
+  the first check that finds the process gone instead of waiting for a
+  second one.
+- The proxy's stream reconnect keeps trying for at least 75 seconds after an
+  outage starts (8 seconds apart once the first 5 attempts are used), long
+  enough to cover an AceServe restart by the watchdog. The window can be
+  changed with the `RECONNECT_WINDOW` environment variable.
+
+### Fixed
+
+- The null-packet keepalive sent to players during a reconnect never
+  switched on when the engine's output did not start on an MPEG-TS packet
+  boundary (seen on a live channel: 116 bytes before the first sync byte).
+  The proxy now looks for three sync bytes 188 bytes apart at any offset in
+  the first chunks of the stream.
+
 ## [1.3.5] - 2026-11-07
 
 Two changes cherry-picked from the albersg/IPTV-Plugin-HaP fork, and stream
@@ -12,7 +37,7 @@ recovery adapted from the pedrosc10/IPTV-Plugin-HaP fork.
 - When the engine stream of a channel drops while players are still
   connected, HTTPAceProxy keeps their connections open and starts a new
   engine session, up to 5 times (2, 4, 6, 8 and 8 seconds apart; the count
-  resets after 60 seconds of streaming). Until the new session delivers data,
+  resets after 60 seconds of streaming; 1.3.6 extends this). Until the new session delivers data,
   players get MPEG-TS null packets, which they discard, so their read timeout
   does not fire. HLS streams hand over to this after 5 failed playlist
   refreshes instead of retrying forever.

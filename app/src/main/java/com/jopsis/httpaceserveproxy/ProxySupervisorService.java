@@ -465,16 +465,20 @@ public class ProxySupervisorService extends Service {
     }
 
     /**
-     * Every 15 s: if AceServe or the proxy stopped answering for two checks in a row,
-     * restart what died, at most once a minute. After three recoveries in a row that
-     * never got back to healthy it stops trying, so an engine that cannot start is not
-     * restarted forever; the next start from the HaP screen re-arms it.
+     * Every 15 s: if AceServe or the proxy stopped answering for two checks in a row
+     * (or the AceServe process is gone, which needs no second check), restart what died,
+     * at most once a minute. A dead engine is restarted on its own, leaving the proxy and
+     * its player connections up so the proxy's reconnect can carry them over. After three
+     * recoveries in a row that never got back to healthy it stops trying, so an engine
+     * that cannot start is not restarted forever; the next start from the HaP screen
+     * re-arms it.
      */
     private void watchdogTick() {
         try {
             if (!serverWanted) return;
             if (isAlive(supervisorThread) || isAlive(proxyRestartThread)) return;
-            boolean aceUp = aceServe != null && aceServe.isRunning()
+            boolean aceProcessAlive = aceServe != null && aceServe.isRunning();
+            boolean aceUp = aceProcessAlive
                     && HealthClient.waitForTcp("127.0.0.1", ACE_HTTP_PORT, 1500);
             boolean proxyUp = HealthClient.waitForTcp(ProxyExposure.LOCAL_HOST, ProxyExposure.PROXY_PORT, 1500);
             if (aceUp && proxyUp) {
@@ -482,7 +486,7 @@ public class ProxySupervisorService extends Service {
                 failedRecoveries = 0;
                 return;
             }
-            if (++unhealthyTicks < 2) return;
+            if (++unhealthyTicks < 2 && aceProcessAlive) return;
             if (failedRecoveries >= WATCHDOG_MAX_FAILED_RECOVERIES) return;
             long now = System.currentTimeMillis();
             if (now - lastRecoveryAt < 60_000) return;
@@ -493,7 +497,9 @@ public class ProxySupervisorService extends Service {
                     + " proxy=" + (proxyUp ? "up" : "down") + ", recovering ("
                     + failedRecoveries + "/" + WATCHDOG_MAX_FAILED_RECOVERIES + ")");
             if (!serverWanted) return;
-            if (!aceUp) {
+            if (!aceUp && proxyUp) {
+                startEngineRestart();
+            } else if (!aceUp) {
                 stopAll(false);
                 if (serverWanted) startAll();
             } else {
@@ -501,6 +507,34 @@ public class ProxySupervisorService extends Service {
             }
         } catch (Throwable t) {
             ServiceState.appendLog("watchdog error: " + t);
+        }
+    }
+
+    /** Restarts AceServe alone; runs as the supervisor thread so ticks and starts wait for it. */
+    private synchronized void startEngineRestart() {
+        if (isAlive(supervisorThread)) return;
+        supervisorThread = new Thread(this::runEngineRestart, "engine-restart");
+        supervisorThread.start();
+    }
+
+    private void runEngineRestart() {
+        try {
+            ServiceState.error("");
+            ServiceState.phase("Restarting AceServe");
+            aceServe.stop();
+            ServiceState.aceRunning = false;
+            aceServe.prepare();
+            aceServe.start();
+            ServiceState.aceRunning = waitForAceServe();
+            if (!ServiceState.aceRunning) throw new IllegalStateException("AceServe did not open local ports");
+            ServiceState.phase("Running");
+            ServiceState.appendLog("watchdog: AceServe restarted, proxy kept running");
+            updateNotification(ProxyExposure.notificationText(this));
+        } catch (Exception e) {
+            // The next watchdog tick sees the engine still down and retries, within its limits.
+            ServiceState.error("engine restart: " + e);
+            ServiceState.phase("Failed");
+            updateNotification(getString(R.string.status_failed));
         }
     }
 }

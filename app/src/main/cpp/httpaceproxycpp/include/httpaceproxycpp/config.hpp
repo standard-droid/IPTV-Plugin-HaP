@@ -28,6 +28,8 @@ struct Config {
     // Engine sessions rebuilt per broadcast after its stream drops, before giving up.
     // The count resets once a session has streamed for 60 s.
     int reconnect_attempts = 5;
+    // Seconds after an outage starts during which retries go on past reconnect_attempts.
+    int reconnect_window = 75;
     int curl_stream_buffer = 1048576;
     bool use_chunked = true;
     bool firewall = false;

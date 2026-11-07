@@ -9,6 +9,27 @@
 
 namespace httpace {
 
+namespace {
+
+// True if the buffer holds MPEG-TS: three sync bytes (0x47) 188 bytes apart at some
+// offset within the first packet. The engine's output does not always start on a
+// packet boundary, so checking only the first byte misses real TS streams.
+bool looks_like_mpeg_ts(const char* data, std::size_t size) {
+    constexpr std::size_t kPacket = 188;
+    constexpr std::size_t kNeeded = 3;
+    if (size < kPacket * (kNeeded - 1) + 1) return false;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(data);
+    for (std::size_t offset = 0; offset < kPacket; ++offset) {
+        if (offset + kPacket * (kNeeded - 1) >= size) break;
+        bool match = true;
+        for (std::size_t i = 0; i < kNeeded && match; ++i) match = bytes[offset + i * kPacket] == 0x47;
+        if (match) return true;
+    }
+    return false;
+}
+
+} // namespace
+
 ChunkQueue::ChunkQueue(std::size_t max_chunks) : max_chunks_(std::max<std::size_t>(2, max_chunks)) {}
 
 PushResult ChunkQueue::push(ChunkPtr chunk) {
@@ -210,7 +231,12 @@ void Broadcast::wait_with_keepalive(int seconds) {
 void Broadcast::stream_loop() {
     const std::string tag = "[" + infohash_.substr(0, 8) + "] ";
     const int max_attempts = std::max(0, config_.reconnect_attempts);
+    // Retries continue for at least this long after an outage starts, even past
+    // max_attempts: if the AceServe process died, HaP's watchdog needs up to ~15 s to
+    // notice and ~20-25 s to start it again, longer than the attempts alone last.
+    const auto recovery_window = std::chrono::seconds(std::max(0, config_.reconnect_window));
     int failures = 0;
+    auto outage_start = std::chrono::steady_clock::now();
     while (running_ && client_count() > 0) {
         auto attempt_start = std::chrono::steady_clock::now();
         try {
@@ -220,15 +246,18 @@ void Broadcast::stream_loop() {
         }
         if (!running_ || client_count() == 0) break;
 
-        if (std::chrono::steady_clock::now() - attempt_start > std::chrono::seconds(60)) failures = 0;
-        if (++failures > max_attempts) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - attempt_start > std::chrono::seconds(60)) failures = 0;
+        if (failures == 0) outage_start = now;
+        ++failures;
+        if (max_attempts == 0 || (failures > max_attempts && now - outage_start >= recovery_window)) {
             if (max_attempts > 0) {
-                log_line("ERROR", tag + "giving up after " + std::to_string(max_attempts) + " reconnect attempts");
+                log_line("ERROR", tag + "giving up after " + std::to_string(failures - 1) + " reconnect attempts in " +
+                         std::to_string(std::chrono::duration_cast<std::chrono::seconds>(now - outage_start).count()) + "s");
             }
             break;
         }
-        log_line("WARNING", tag + "engine stream dropped, reconnecting (" + std::to_string(failures) + "/" +
-                 std::to_string(max_attempts) + ")");
+        log_line("WARNING", tag + "engine stream dropped, reconnecting (attempt " + std::to_string(failures) + ")");
 
         if (auto old = take_ace()) {
             try { old->stop_broadcast(); } catch (...) {}
@@ -246,7 +275,7 @@ void Broadcast::stream_loop() {
             }
         } catch (const std::exception& e) {
             // The next run_attempt() fails fast with "no engine session" and counts as
-            // another failure, so this still ends after max_attempts.
+            // another failure, so this still ends once the attempts and window run out.
             log_line("ERROR", tag + "engine reconnect failed: " + std::string(e.what()));
         }
     }
@@ -304,8 +333,13 @@ void Broadcast::broadcast_chunk(const char* data, std::size_t size, bool keepali
     std::lock_guard<std::mutex> chunk_lock(chunk_mutex_);
     if (keepalive) {
         if (any_data_) return;
-    } else if (!any_data_.exchange(true) && !ts_output_) {
-        ts_output_ = static_cast<unsigned char>(data[0]) == 0x47;
+    } else {
+        any_data_ = true;
+        // Only probe the start of the stream, so a long non-TS stream cannot match by chance.
+        if (!ts_output_ && ts_probe_chunks_ < 64) {
+            ++ts_probe_chunks_;
+            if (looks_like_mpeg_ts(data, size)) ts_output_ = true;
+        }
     }
     // One buffer for every client: the fan-out shares it instead of copying per client.
     auto buffer = std::make_shared<std::vector<char>>(data, data + size);
